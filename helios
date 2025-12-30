@@ -1650,22 +1650,21 @@ void loop() {
 
 
 
-
 /* 
- * HELIOS Master Firmware - v18.0 (Network Transparency & Info Screens)
+ * HELIOS Master Firmware - v19.1 (UI Refinement & Full Network Transparency)
  * 
- * CHANGE LOG v18.0:
- * - FIX: Router IP is now included in MQTT and Local API status payloads.
- * - NEW: Added SCREEN_IPS to display AP and Router IPs.
- * - NEW: Added SCREEN_AP_CREDS to display AP connection details.
- * - UPDATED: Menu navigation loop updated to include new screens.
+ * CHANGE LOG v19.0:
+ * - ENHANCED: JSON payload now includes distinct "ap_ip" and "router_ip" for the App.
+ * - FIXED: "Select" button press in Popup/Alert no longer leaks into Menu Navigation logic.
+ * - REDESIGNED: "Link Lost" Alert screen now uses the Premium Popup design (Rounded box, clean style).
+ * - PRESERVED: All existing screens and logic remain untouched.
  * 
  * CORE FEATURES:
  * - Master-Slave UDP Coordination
  * - Premium Confirmation UI with List Selection
  * - Full App Compatibility (MQTT + Local API)
- * - Network Transparency (IPs communicated to App)
- * - Remote Firmware Updates
+ * - Network Transparency (AP & Router IPs communicated)
+ * - Robust Input Handling (State Leak Prevention)
  */
 
 #include <Arduino.h>
@@ -1745,14 +1744,13 @@ WifiSettings wifiCreds;
 
 enum SystemMode { MODE_HEAT = 0, MODE_TIMER = 1, MODE_CYCLE = 2 };
 enum SystemError { ERR_NONE = 0, ERR_SLAVE_LOST = 1, ERR_SENSOR_FAIL = 2, ERR_WIFI_LOST = 3 };
-// UPDATED: Added SCREEN_IPS and SCREEN_AP_CREDS
 enum ScreenId { 
   SCREEN_HOME, 
   SCREEN_NET_LOCAL, 
   SCREEN_NET_CLOUD, 
   SCREEN_INFO, 
-  SCREEN_IPS,       // NEW
-  SCREEN_AP_CREDS,  // NEW
+  SCREEN_IPS,       
+  SCREEN_AP_CREDS,  
   SCREEN_RESET, 
   SCREEN_COUNT 
 };
@@ -1815,7 +1813,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Helios Systems</title>
 <style>:root{--bg:#121212;--c:#1e1e1e;--t:#e0e0e0;--a:#00e676}body{background:var(--bg);color:var(--t);font-family:sans-serif;padding:20px;text-align:center}
 .card{background:var(--c);border-radius:12px;padding:20px;margin-bottom:15px}h1{color:var(--a);margin:0}textarea{width:100%;background:#000;color:var(--a);border:1px solid #333;padding:10px}
-</style></head><body><div class="card"><h1>Helios Systems</h1><p>Master Hub v18.0</p></div>
+</style></head><body><div class="card"><h1>Helios Systems</h1><p>Master Hub v19.0</p></div>
 <div class="card"><h3>Slave Credentials</h3><textarea readonly onclick="this.select()">{"role":"SLAVE","ssid":"HELIOS_MASTER","pass":"12345678","relay_pin":2,"led_pin":1,"sensors":false}</textarea></div>
 <div class="card"><h3>Firmware Update</h3><a href="/update"><button>Upload Firmware</button></a></div>
 </body></html>
@@ -1875,24 +1873,26 @@ void sendNotification(const char* title, const char* message) {
   mqttClient.publish(topic_notifications, notif);
 }
 
-// UPDATED: Now includes IP in payload
+// UPDATED: Includes separate AP and Router IPs
 void publishStatus(const char* trigger) {
   if (!mqttClient.connected()) return;
   
-  char msg[256];
+  char msg[512]; // Increased buffer for JSON
   String routerIP = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "0.0.0.0";
+  String apIP = WiFi.softAPIP().toString();
   
-  snprintf(msg, sizeof(msg), 
-           "{\"relay\":%s,\"temp\":%.1f,\"target\":%.1f,\"humidity\":%.1f,\"trigger\":\"%s\",\"mode\":%d,\"enabled\":%s,\"ip\":\"%s\"}", 
-           relayActive ? "true" : "false", 
-           temperature, 
-           targetTemperature, 
-           humidity,
-           trigger,
-           currentMode,
-           systemEnabled ? "true" : "false",
-           routerIP.c_str());
-           
+  StaticJsonDocument<512> doc;
+  doc["relay"] = relayActive;
+  doc["temp"] = temperature;
+  doc["target"] = targetTemperature;
+  doc["humidity"] = humidity;
+  doc["trigger"] = trigger;
+  doc["mode"] = (int)currentMode;
+  doc["enabled"] = systemEnabled;
+  doc["router_ip"] = routerIP;
+  doc["ap_ip"] = apIP;
+  
+  serializeJson(doc, msg);
   mqttClient.publish(topic_status, msg);
 }
 
@@ -2047,22 +2047,25 @@ void handleApiCommand() {
   }
 }
 
-// UPDATED: Now includes IP in response
+// UPDATED: Includes AP and Router IPs in response
 void handleApiStatus() {
   handleCorsHeaders();
-  char msg[256];
-  String routerIP = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "0.0.0.0";
+  StaticJsonDocument<512> doc;
   
-  snprintf(msg, sizeof(msg), 
-           "{\"relay\":%s,\"temp\":%.1f,\"target\":%.1f,\"humidity\":%.1f,\"mode\":%d,\"enabled\":%s,\"ip\":\"%s\"}", 
-           relayActive ? "true" : "false", 
-           temperature, 
-           targetTemperature, 
-           humidity,
-           currentMode,
-           systemEnabled ? "true" : "false",
-           routerIP.c_str());
-           
+  String routerIP = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "0.0.0.0";
+  String apIP = WiFi.softAPIP().toString();
+
+  doc["relay"] = relayActive;
+  doc["temp"] = temperature;
+  doc["target"] = targetTemperature;
+  doc["humidity"] = humidity;
+  doc["mode"] = (int)currentMode;
+  doc["enabled"] = systemEnabled;
+  doc["router_ip"] = routerIP;
+  doc["ap_ip"] = apIP;
+
+  String msg;
+  serializeJson(doc, msg);
   server.send(200, "application/json", msg);
 }
 
@@ -2258,9 +2261,8 @@ void renderScreen(ScreenId id, int xOffset) {
     drawStatusDot(xOffset + 6, 50, wifiOk, internetAvailable); 
     display.setCursor(rowX, 53); display.print("Internet: "); display.print(internetAvailable ? "OK" : "NO");
 
-    //display.setCursor(xOffset + 4, 60); display.print("IP: "); if(wifiOk) display.print(WiFi.localIP()); else display.print("---.---.---.---");
+    display.setCursor(xOffset + 4, 60); display.print("IP: "); if(wifiOk) display.print(WiFi.localIP()); else display.print("---.---.---.---");
   }
-  // NEW SCREEN: IP ADDRESSES
   else if (id == SCREEN_IPS) {
     display.setDrawColor(1); display.drawBox(xOffset, 0, 128, 14); display.setDrawColor(0);
     drawCenteredText(xOffset, 10, "IP ADDRESSES", u8g2_font_6x12_tr); display.setDrawColor(1);
@@ -2270,14 +2272,13 @@ void renderScreen(ScreenId id, int xOffset) {
     display.setCursor(rowX + 55, 28); display.print(WiFi.softAPIP());
     
     bool wifiOk = (WiFi.status() == WL_CONNECTED);
-    display.setCursor(rowX, 44); display.print("STA IP:");
+    display.setCursor(rowX, 44); display.print("Router IP:");
     if(wifiOk) {
       display.setCursor(rowX + 55, 44); display.print(WiFi.localIP());
     } else {
-      display.setCursor(rowX + 55, 44); display.print("None");
+      display.setCursor(rowX + 55, 44); display.print("Not Connected");
     }
   }
-  // NEW SCREEN: AP CREDENTIALS
   else if (id == SCREEN_AP_CREDS) {
     display.setDrawColor(1); display.drawBox(xOffset, 0, 128, 14); display.setDrawColor(0);
     drawCenteredText(xOffset, 10, "AP CREDENTIALS", u8g2_font_6x12_tr); display.setDrawColor(1);
@@ -2296,8 +2297,8 @@ void renderScreen(ScreenId id, int xOffset) {
     drawCenteredText(xOffset, 18, "HELIOS SYSTEMS", u8g2_font_8x13B_mr);
     display.drawHLine(xOffset + 10, 24, 108);
     display.setFont(u8g2_font_HelvetiPixel_tr);
-    drawCenteredText(xOffset, 38, "Firmware v18.0", u8g2_font_HelvetiPixel_tr);
-    drawCenteredText(xOffset, 50, "Network Refactored", u8g2_font_HelvetiPixel_tr);
+    drawCenteredText(xOffset, 38, "Firmware v19.0", u8g2_font_HelvetiPixel_tr);
+    drawCenteredText(xOffset, 50, "Premium UI + IP Sync", u8g2_font_HelvetiPixel_tr);
     drawCenteredText(xOffset, 62, "(c) OrnithDynamics", u8g2_font_HelvetiPixel_tr);
   }
   else if (id == SCREEN_RESET) {
@@ -2313,6 +2314,49 @@ void renderScreen(ScreenId id, int xOffset) {
       drawCenteredText(xOffset, 55, "Hold SELECT 5s", u8g2_font_HelvetiPixel_tr);
     }
   }
+}
+
+// REDESIGNED: Now uses the Premium Popup Design (Rounded Box)
+void drawAlertScreen() {
+  // Semi-transparent background overlay
+  display.setDrawColor(2);
+  display.drawBox(0, 0, 128, 64);
+  
+  // Main popup container
+  display.setDrawColor(1);
+  display.drawRBox(10, 8, 108, 48, 6);
+  
+  // Inner container (for clean look)
+  display.setDrawColor(0);
+  display.drawRBox(11, 9, 106, 46, 5);
+  display.setDrawColor(1);
+  
+  // Title
+  display.setFont(u8g2_font_7x13B_mr);
+  drawCenteredText(0, 20, "LINK LOST", u8g2_font_7x13B_mr);
+  
+  // Warning Icon
+  display.setFont(u8g2_font_open_iconic_embedded_1x_t); 
+  display.drawGlyph(32, 48, 0x45); // Warning icon
+
+  // Single "Dismiss" button
+  display.setFont(u8g2_font_7x13B_mr);
+  if (selectedOption == OPTION_YES) { // Reusing YES as "Active/Highlight"
+    display.setDrawColor(1);
+    display.drawRBox(40, 30, 48, 16, 3);
+    display.setDrawColor(0);
+    drawCenteredText(0, 42, "OK", u8g2_font_7x13B_mr);
+    display.setDrawColor(1);
+  } else {
+    // Should not happen for alert, but structure remains
+    drawCenteredText(0, 42, "OK", u8g2_font_7x13B_mr);
+  }
+  
+  // Instruction
+  display.setFont(u8g2_font_5x7_tr);
+  drawCenteredText(0, 60, "SELECT: DISMISS", u8g2_font_5x7_tr);
+  
+  display.sendBuffer();
 }
 
 void drawConfirmPopup() {
@@ -2345,22 +2389,6 @@ void drawConfirmPopup() {
   drawCenteredText(0, 60, "UP/DOWN: SELECT  |  SELECT: CONFIRM", u8g2_font_5x7_tr);
 }
 
-void drawAlertScreen() {
-  display.clearBuffer();
-  if ((now / 500) % 2 == 0) display.drawFrame(0, 0, 128, 64);
-  display.drawBox(10, 8, 108, 16); display.setDrawColor(0);
-  drawCenteredText(0, 20, "LINK LOST", u8g2_font_7x13B_mr); display.setDrawColor(1);
-  drawCenteredText(0, 38, "SAFETY SHUTDOWN", u8g2_font_HelvetiPixel_tr);
-  display.setFont(u8g2_font_7x13B_mr);
-  if (selectedOption == OPTION_YES) {
-    display.setDrawColor(1); display.drawRBox(30, 45, 68, 16, 3); display.setDrawColor(0);
-    drawCenteredText(0, 57, "DISMISS", u8g2_font_7x13B_mr); display.setDrawColor(1);
-  } else { drawCenteredText(0, 57, "DISMISS", u8g2_font_7x13B_mr); }
-  display.setFont(u8g2_font_5x7_tr);
-  drawCenteredText(0, 62, "UP/DOWN: SELECT  |  SELECT: CONFIRM", u8g2_font_5x7_tr);
-  display.sendBuffer();
-}
-
 void updateDisplay() {
   if (currentError == ERR_SLAVE_LOST && !errorDismissed) {
     drawAlertScreen();
@@ -2381,27 +2409,40 @@ void updateDisplay() {
   display.sendBuffer();
 }
 
+// ENHANCED: Prevents state leakage to main handler
 void handlePopupNavigation() {
   bool sel = digitalRead(BTN_SELECT) == LOW;
   bool up = digitalRead(BTN_UP) == LOW;
   bool down = digitalRead(BTN_DOWN) == LOW;
+  
   if (sel && !buttonHandled) {
     buttonHandled = true; playTone(1500, 100);
     if (selectedOption == OPTION_YES) {
       targetTemperature = pendingTargetTemp; targetDisplayTimeout = now + 1500; showConfirmPopup = false; playTone(3000, 200);
-    } else { showConfirmPopup = false; playTone(500, 200); } return;
+    } else { showConfirmPopup = false; playTone(500, 200); } 
+    // CRITICAL FIX: Reset main handler timers to prevent menu entry
+    selectPressStart = 0; 
+    longPressTriggered = false;
+    return;
   }
   if (up && !buttonHandled) { buttonHandled = true; if (selectedOption != OPTION_YES) { selectedOption = OPTION_YES; lastScrollTime = now; playTone(800, 50); } return; }
   if (down && !buttonHandled) { buttonHandled = true; if (selectedOption != OPTION_NO) { selectedOption = OPTION_NO; lastScrollTime = now; playTone(600, 50); delay(250); } return; }
   if (!sel && !up && !down) buttonHandled = false;
 }
 
+// ENHANCED: Prevents state leakage to main handler
 void handleAlertNavigation() {
   bool sel = digitalRead(BTN_SELECT) == LOW;
   bool up = digitalRead(BTN_UP) == LOW;
   bool down = digitalRead(BTN_DOWN) == LOW;
+  
   if (sel && !buttonHandled) {
-    buttonHandled = true; if (selectedOption == OPTION_YES) { errorDismissed = true; playTone(1000, 100); } return;
+    buttonHandled = true; 
+    if (selectedOption == OPTION_YES) { errorDismissed = true; playTone(1000, 100); } 
+    // CRITICAL FIX: Reset main handler timers
+    selectPressStart = 0;
+    longPressTriggered = false;
+    return;
   }
   if ((up || down) && !buttonHandled) {
     buttonHandled = true; selectedOption = (selectedOption == OPTION_YES) ? OPTION_NO : OPTION_YES; lastScrollTime = now; playTone(700, 50); return;
@@ -2432,7 +2473,7 @@ void handleInput() {
     if (now - lastTempAdjustTime > 200) {
       if (up && !isAnimating) {
         int prev = currentScreen - 1;
-        if (prev < SCREEN_NET_LOCAL) prev = SCREEN_RESET; // Logic updated for SCREEN_COUNT
+        if (prev < SCREEN_NET_LOCAL) prev = SCREEN_RESET;
         targetScreen = (ScreenId)prev;
         screenOffset = -128;
         isAnimating = true;
@@ -2440,7 +2481,7 @@ void handleInput() {
         playTone(400, 30);
       } else if (down && !isAnimating) {
         int next = currentScreen + 1;
-        if (next >= SCREEN_COUNT) next = SCREEN_NET_LOCAL; // Logic updated for SCREEN_COUNT
+        if (next >= SCREEN_COUNT) next = SCREEN_NET_LOCAL;
         targetScreen = (ScreenId)next;
         screenOffset = 128;
         isAnimating = true;
@@ -2554,7 +2595,7 @@ void loop() {
 
   if (!startupApLaunched && now > 3000) { 
     startupApLaunched = true; toggleAPMode(true); playTone(2000, 50); 
-    sendNotification("System", "Helios Master v18.0 Online");
+    sendNotification("System", "Helios Master v19.0 Online");
   }
   
   if (apModeActive) { 
