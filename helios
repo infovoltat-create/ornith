@@ -1648,10 +1648,10 @@ void loop() {
 }
 
 
-
+-------------------------------------------------------------------------------------------------------
 
 /* 
- * HELIOS Master Firmware - v19.1 (UI Refinement & Full Network Transparency)
+ * HELIOS Master Firmware - OrnithDynamics
  * 
  * CHANGE LOG v19.0:
  * - ENHANCED: JSON payload now includes distinct "ap_ip" and "router_ip" for the App.
